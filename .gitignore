@@ -1,0 +1,10 @@
+# directories
+data-sets/
+__pycache__/
+.ipynb_checkpoints/
+
+# Temporary files
+*.pyc
+*.pyo
+*.swp
+*.ipynb_checkpoints
