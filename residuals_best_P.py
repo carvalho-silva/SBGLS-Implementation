@@ -52,28 +52,32 @@ def func_fit(t, rv, P):
 	
 	return coef, rv_fit, residuals, omega
 
-   
-time = renamed_df['time'] 
-rv = renamed_df['rv']
-
-P = 2.92
-
-coef, rv_fit, residuals, omega = func_fit(time, rv, P)
-
-t_ = np.linspace(time.min(),time.max(),500)
-
-phase = (time % P) / P
+def remove_planet(renamed_df, best_P, planet='b'):
+	time = renamed_df['time'] 
+	rv = renamed_df['rv']
 
 
-idx = np.argsort(phase)
-phase_sorted = phase[idx]
-rv_fit_sorted = rv_fit[idx]
+	coef, rv_fit, residuals, omega = func_fit(time, rv, best_P)
 
-plt.scatter(phase, rv) 
-plt.plot(phase_sorted, rv_fit_sorted)
-plt.show()
+	t_ = np.linspace(time.min(),time.max(),500)
 
-renamed_df['rv_fit'] = rv_fit 
-renamed_df['residuals'] = residuals
-renamed_df.to_csv('DS1_timeSeries_b.csv')
-print(renamed_df)
+	phase = (time % best_P) / best_P
+
+
+	idx = np.argsort(phase)
+	phase_sorted = phase[idx]
+	rv_fit_sorted = rv_fit[idx]
+
+	plt.scatter(phase, rv) 
+	plt.plot(phase_sorted, rv_fit_sorted)
+	plt.show()
+	
+	residuals_df = renamed_df.copy()
+	residuals_df['rv_fit'] = rv_fit 
+	residuals_df['residuals'] = residuals
+
+	residuals_df.to_csv(f"DS1_timeSeries_{planet}.csv")
+	return residuals_df
+	
+best_P = 2.91486880466472
+remove_planet(renamed_df, best_P)

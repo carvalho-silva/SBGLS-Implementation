@@ -54,6 +54,9 @@ def calculate_SNR(output, delta_P):
 
     s = signal_power.max() - np.median(noise_power)
     n = median_average_deviation(noise_power) * 1.48
+    
+    if n<=0:
+    	return 0
 
     return s/n
 
