@@ -6,3 +6,6 @@ __pycache__/
 
 # Ignore local data directory
 data-sets/
+output/
+compare_activity/
+compare_SGLS_SBGLS/
