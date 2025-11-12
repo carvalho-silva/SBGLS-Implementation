@@ -33,6 +33,33 @@ import matplotlib.pyplot as plt
 from tqdm import tqdm
 
 
+def median_average_deviation(data, axis=None):
+    data = np.asarray(data)
+    med = np.median(data, axis=axis)
+    return np.median(np.abs(data - med), axis=axis)
+
+
+def calculate_SNR(output, delta_P):
+    lower_period = output['best_P'] - delta_P
+    higher_period = output['best_P'] + delta_P
+
+    periods = output['periods']
+    power = output['power']
+
+    noise_mask = (periods < lower_period) | (periods > higher_period)
+    noise_power = power[noise_mask]
+
+    signal_mask = (periods >= lower_period) & (periods <= higher_period)
+    signal_power = power[signal_mask]
+
+    s = signal_power.max() - np.median(noise_power)
+    n = median_average_deviation(noise_power) * 1.48
+    
+    if n<=0:
+    	n = 1e-8
+    return s/n
+
+
 def select_N_time_series_points(x, y, dy, N, mode='chronological', idxs_mask=None):
     x = np.array(x)
     y = np.array(y)
@@ -62,7 +89,6 @@ def select_N_time_series_points(x, y, dy, N, mode='chronological', idxs_mask=Non
         dy_cut = dy[idxs_mask]
 
     return x_cut, y_cut, dy_cut, idxs_mask
-
 
 
 def plot_curve_and_periodogram(x, y, dy, num_points, periodogram_type='GLS',
@@ -160,24 +186,29 @@ def BGLS(time, y, dy, fmin = 0.03, fmax = 2.0, num_freqs = 5000):
 
     freq = get_frequency_grid(fmin = fmin, fmax = fmax, num_freqs = num_freqs)
     omega_array = 2 * np.pi * freq
-
+    
+    w = 1.0 / (dy**2)
+    Wy = w * y
+    yWy = np.dot(y, Wy)
+    
+    ridge = 1e-12
+    ones = np.ones_like(time)
+    
     logEv_array = []
 
     for omega in omega_array:
-        w = 1.0 / (dy**2)
-        Wy = w * y
-        yWy = np.dot(y, Wy)
+
 
         c = np.cos(omega * time)
         s = np.sin(omega * time)
 
-        X = np.column_stack([c, s, np.ones_like(time)])
+        X = np.column_stack([c, s, ones])
         
         XtW = (X.T * w)
         XtWX = XtW @ X
         b = XtW @ y
 
-        ridge = 1e-12
+        
         XtWX[np.diag_indices_from(XtWX)] += ridge
 
         # Solve and determinants
@@ -192,16 +223,18 @@ def BGLS(time, y, dy, fmin = 0.03, fmax = 2.0, num_freqs = 5000):
             invXtWX = np.linalg.pinv(XtWX)
             sign, logdet = np.linalg.slogdet(XtWX)
             if sign <= 0:
-                # extremely degenerate, so return a very small log-evidence
-                return -1e300
+                logEv_array[i] = -1e300
+                continue
             quad = b @ (invXtWX @ b)
 
         log_evidence = -0.5 * (yWy - quad) - 0.5 * logdet
 
         logEv_array.append(log_evidence)
+        
     
     logEv_array = np.array(logEv_array)
     logEv_array -= logEv_array.max()
+
     post = np.exp(logEv_array)
 
     # Normalizing by the trapezoidal integral over frequency so it sums to 1 in the continuous sense
@@ -221,9 +254,12 @@ def BGLS(time, y, dy, fmin = 0.03, fmax = 2.0, num_freqs = 5000):
     return result
 
 
+
+
 def stacked_periodogram(t, y, dy, N_min, periodogram_type='GLS',
                         p_min = 0.5, p_max = 50, num_periods = 5000,
-                        mode='chronological', idxs_masks=None):
+                        mode='chronological', idxs_masks=None,
+                        delta_P = 0.08):
     fmin = 1/p_max
     fmax = 1/p_min
 
@@ -237,10 +273,11 @@ def stacked_periodogram(t, y, dy, N_min, periodogram_type='GLS',
     N_array = []
     periods_array = []
     power_array = []
+    SNR_array = []
 
     for i in tqdm(range(N_max-N_min)):
         current_N = N_min+i
-        if mode == 'random with no replacement':
+        if mode == 'random without replacement':
             mode = mode.split(' ')[0]
             idxs_masks = None
         t_cut, y_cut, dy_cut, idxs_masks = select_N_time_series_points(t, y, dy,
@@ -251,16 +288,38 @@ def stacked_periodogram(t, y, dy, N_min, periodogram_type='GLS',
                                                   num_freqs = num_periods)
 
         N_array.append(np.zeros(len(bgls_result['freq'])) + current_N)
-        periods_array.append(1/bgls_result['freq'])
+        periods = 1/bgls_result['freq']
+        periods_array.append(periods)
         power = bgls_result['power'] - min(bgls_result['power']) + 1
         power_array.append(power)
+        best_P = bgls_result['best_period']
+
+        output = {
+            'periods' : periods,
+            'power' : power,
+            'best_P' : best_P
+        }
+
+        SNR = calculate_SNR(output, delta_P)
+        SNR_array.append(SNR)
 
     data = np.stack([N_array, periods_array, power_array], axis=0)
 
-    return data
+    results = {
+        'SNR' : {
+            'best_P' : best_P,
+            'SNR_array' : SNR_array,
+            'delta_P' : delta_P
+        },
+        'data' : data
+    }
+
+    return results
 
 
-def plot_stacked_periodogram_heatmap(data, cmap="Reds", vmin=None, vmax=None, norm='linear'):
+def plot_stacked_periodogram_heatmap(results, cmap="Reds", vmin=None, vmax=None, norm='linear',
+                                     highlight_strong_signal = False, plot_SNR=False,
+                                     save_plots=False):
     """
     Plot heatmap from `data` = np.stack([N_array, periods_array, power_array], axis=0)
     where each entry is a list/array per N having the same number of frequencies.
@@ -269,10 +328,18 @@ def plot_stacked_periodogram_heatmap(data, cmap="Reds", vmin=None, vmax=None, no
     y-axis: current_N
     z-axis: power (color)
     """
+    data = results['data']
+    SNR_array = results['SNR']['SNR_array']
+    best_P = results['SNR']['best_P']
+    delta_P = results['SNR']['delta_P']
+
     N, P, Z = data[0], data[1], data[2]
+
     N = np.asarray(N)
     P = np.asarray(P)
     Z = np.asarray(Z)
+
+    N_1D_array = N[:,0]
 
     # Sort columns by period and rows by N, just in case
     col_order = np.argsort(P[0])
@@ -302,5 +369,27 @@ def plot_stacked_periodogram_heatmap(data, cmap="Reds", vmin=None, vmax=None, no
     ax.set_ylabel("N of Observations", fontsize=fontsize)
     ax.tick_params(axis='both', labelsize=12)
 
+    if highlight_strong_signal:
+        ax.vlines([best_P-delta_P, best_P+delta_P], min(N_1D_array), max(N_1D_array),
+                  ls='--')
+
     plt.tight_layout()
-    plt.show()
+    if save_plots:
+    	plt.savefig(f'{save_plots}_stacked.png',dpi=100)
+    	plt.close()
+    else:
+    	plt.show()
+
+    if plot_SNR:
+        N_1D_array = N[:,0]
+
+        plt.figure(figsize=(10, 5))
+        plt.plot(N_1D_array, SNR_array)
+        plt.xlabel("N of Observations", fontsize=fontsize)
+        plt.ylabel("SNR", fontsize=fontsize)
+        plt.tick_params(axis='both', labelsize=12)
+        if save_plots:
+        	plt.savefig(f'{save_plots}_SNR.png',dpi=100)
+        	plt.close()
+        else:
+        	plt.show()

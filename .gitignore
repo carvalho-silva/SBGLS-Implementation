@@ -1,10 +1,18 @@
-# directories
-data-sets/
-__pycache__/
+# Jupyter
 .ipynb_checkpoints/
+*.ipynb_checkpoints
 
-# Temporary files
+# Python
+__pycache__/
 *.pyc
 *.pyo
+
+# Editors
 *.swp
-*.ipynb_checkpoints
+
+# Data & outputs
+data-sets/
+data_sets/
+output/
+compare_activity/
+compare_SGLS_SBGLS/
