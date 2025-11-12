@@ -56,8 +56,7 @@ def calculate_SNR(output, delta_P):
     n = median_average_deviation(noise_power) * 1.48
     
     if n<=0:
-    	return 0
-
+    	n = 1e-8
     return s/n
 
 
@@ -187,24 +186,29 @@ def BGLS(time, y, dy, fmin = 0.03, fmax = 2.0, num_freqs = 5000):
 
     freq = get_frequency_grid(fmin = fmin, fmax = fmax, num_freqs = num_freqs)
     omega_array = 2 * np.pi * freq
-
+    
+    w = 1.0 / (dy**2)
+    Wy = w * y
+    yWy = np.dot(y, Wy)
+    
+    ridge = 1e-12
+    ones = np.ones_like(time)
+    
     logEv_array = []
 
     for omega in omega_array:
-        w = 1.0 / (dy**2)
-        Wy = w * y
-        yWy = np.dot(y, Wy)
+
 
         c = np.cos(omega * time)
         s = np.sin(omega * time)
 
-        X = np.column_stack([c, s, np.ones_like(time)])
+        X = np.column_stack([c, s, ones])
         
         XtW = (X.T * w)
         XtWX = XtW @ X
         b = XtW @ y
 
-        ridge = 1e-12
+        
         XtWX[np.diag_indices_from(XtWX)] += ridge
 
         # Solve and determinants
@@ -219,16 +223,18 @@ def BGLS(time, y, dy, fmin = 0.03, fmax = 2.0, num_freqs = 5000):
             invXtWX = np.linalg.pinv(XtWX)
             sign, logdet = np.linalg.slogdet(XtWX)
             if sign <= 0:
-                # extremely degenerate, so return a very small log-evidence
-                return -1e300
+                logEv_array[i] = -1e300
+                continue
             quad = b @ (invXtWX @ b)
 
         log_evidence = -0.5 * (yWy - quad) - 0.5 * logdet
 
         logEv_array.append(log_evidence)
+        
     
     logEv_array = np.array(logEv_array)
     logEv_array -= logEv_array.max()
+
     post = np.exp(logEv_array)
 
     # Normalizing by the trapezoidal integral over frequency so it sums to 1 in the continuous sense
@@ -312,7 +318,8 @@ def stacked_periodogram(t, y, dy, N_min, periodogram_type='GLS',
 
 
 def plot_stacked_periodogram_heatmap(results, cmap="Reds", vmin=None, vmax=None, norm='linear',
-                                     highlight_strong_signal = False, plot_SNR=False):
+                                     highlight_strong_signal = False, plot_SNR=False,
+                                     save_plots=False):
     """
     Plot heatmap from `data` = np.stack([N_array, periods_array, power_array], axis=0)
     where each entry is a list/array per N having the same number of frequencies.
@@ -367,7 +374,11 @@ def plot_stacked_periodogram_heatmap(results, cmap="Reds", vmin=None, vmax=None,
                   ls='--')
 
     plt.tight_layout()
-    plt.show()
+    if save_plots:
+    	plt.savefig(f'{save_plots}_stacked.png',dpi=100)
+    	plt.close()
+    else:
+    	plt.show()
 
     if plot_SNR:
         N_1D_array = N[:,0]
@@ -377,4 +388,8 @@ def plot_stacked_periodogram_heatmap(results, cmap="Reds", vmin=None, vmax=None,
         plt.xlabel("N of Observations", fontsize=fontsize)
         plt.ylabel("SNR", fontsize=fontsize)
         plt.tick_params(axis='both', labelsize=12)
-        plt.show()
+        if save_plots:
+        	plt.savefig(f'{save_plots}_SNR.png',dpi=100)
+        	plt.close()
+        else:
+        	plt.show()
