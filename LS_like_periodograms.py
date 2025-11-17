@@ -105,7 +105,6 @@ def calculate_SNR(output, delta_P):
 
     if n<=0:
         n = 1e-8
-        return s/n
     return s/n
 
 
@@ -538,5 +537,9 @@ def plot_stacked_periodogram_heatmap(results, cmap="Reds", vmin=None, vmax=None,
         ploting_SNR(results, delta_P=delta_P, base_P=base_P, save_plots=save_plots)
     else:
         plt.tight_layout()
-        plt.show()
+        if save_plots:
+            plt.savefig(f'{save_plots}_stacked.png', dpi=100)
+            plt.close()
+        else:
+            plt.show()
 
