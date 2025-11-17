@@ -39,9 +39,57 @@ def median_average_deviation(data, axis=None):
     return np.median(np.abs(data - med), axis=axis)
 
 
+def uncompress_data(data):
+    N, P, Z = data[0], data[1], data[2]
+
+    N = np.asarray(N)
+    P = np.asarray(P)
+    Z = np.asarray(Z)
+
+    N_1D_array = N[:,0]
+
+    # Sort columns by period and rows by N, just in case
+    col_order = np.argsort(P[0])
+    row_order = np.argsort(N[:, 0])
+
+    P = P[row_order][:, col_order]
+    N = N[row_order][:, col_order]
+    Z = Z[row_order][:, col_order]
+
+    return N, P, Z, N_1D_array
+
+
+def get_P_range(delta_P):
+    """
+    Note that delta_P must be a float or an array.
+    
+    In the case of being a float, the calculation will consider
+    left_P == right_P == delta_P, i.e. a symmetrical period window around the
+    considered period to calculate the SNR.
+    
+    In the case of being an array, it must have length=2 and has to follow the
+    (left_P, right_P) format. Also note that left_P and right_P are the respective
+    distances to the left and right from the base period value being considered for
+    the calculation of the SNR.
+    """
+
+    if (type(delta_P) == float) or (type(delta_P) == int):
+        left_P = delta_P
+        right_P = delta_P
+    elif (type(delta_P) == tuple) or (type(delta_P) == list):
+        if len(delta_P) == 2:
+            left_P, right_P = delta_P
+        else:
+            raise Exception('Invalid array for delta_P.')
+    
+    return left_P, right_P
+
+
 def calculate_SNR(output, delta_P):
-    lower_period = output['best_P'] - delta_P
-    higher_period = output['best_P'] + delta_P
+    left_P, right_P = get_P_range(delta_P)
+
+    lower_period = output['considered_P'] - left_P
+    higher_period = output['considered_P'] + right_P
 
     periods = output['periods']
     power = output['power']
@@ -59,6 +107,33 @@ def calculate_SNR(output, delta_P):
         n = 1e-8
         return s/n
     return s/n
+
+
+def get_SNR(results, delta_P, base_P):
+    data = results['data']
+    best_P_array = results['best_P_array']
+
+    _, P, Z, N_1D_array = uncompress_data(data)
+
+    SNR_array = []
+
+    for i, _ in enumerate(N_1D_array):
+        periods = P[i]
+        power   = Z[i]
+        best_P  = best_P_array[i]
+
+        considered_P = base_P if base_P != None else best_P
+
+        output = {
+                'periods' : periods,
+                'power' : power,
+                'considered_P' : considered_P
+            }
+
+        SNR = calculate_SNR(output, delta_P)
+        SNR_array.append(SNR)
+    
+    return N_1D_array, SNR_array
 
 
 def select_N_time_series_points(x, y, dy, N, mode='chronological', idxs_mask=None):
@@ -262,103 +337,144 @@ def BGLS(time, y, dy, fmin = 0.03, fmax = 2.0, num_freqs = 5000):
     return result
 
 
-
-
 def stacked_periodogram(t, y, dy, N_min, periodogram_type='GLS',
-                        p_min = 0.5, p_max = 50, num_periods = 5000,
+                        p_min=0.5, p_max=50, num_periods=5000,
                         mode='chronological', idxs_masks=None,
-                        delta_P = 0.08, exclude_periods=None,
-                        fit_mean=True):
-    fmin = 1/p_max
-    fmax = 1/p_min
+                        exclude_periods=None,
+                        fit_mean=True,
+                        iterations=None, first_mode_chronological=False):
+    fmin = 1 / p_max
+    fmax = 1 / p_min
 
     algorithm = {
-        'GLS' : GLS,
-        'BGLS' : BGLS
+        'GLS': GLS,
+        'BGLS': BGLS
     }
-    
+
     N_max = len(t)
 
-    N_array = []
-    periods_array = []
-    power_array = []
-    SNR_array = []
+    def single_stack(mode=mode, idxs_masks=idxs_masks, single_tqdm_condition=False):
+        N_array = []
+        periods_array = []
+        power_array = []
+        best_P_array = []
 
-    for i in tqdm(range(N_max-N_min)):
-        current_N = N_min+i
-        
-        if mode == 'random without replacement':
-            mode = mode.split(' ')[0]
-            idxs_masks = None
-            
-        t_cut, y_cut, dy_cut, idxs_masks = select_N_time_series_points(t, y, dy,
-                                                                       N=current_N, mode=mode,
-                                                                       idxs_mask=idxs_masks)
-        if periodogram_type == 'GLS':
-            bgls_result = algorithm[periodogram_type](t_cut, y_cut, dy_cut,
-                                                  fmin = fmin, fmax = fmax,
-                                                  num_freqs = num_periods, fit_mean=fit_mean)
-        else:
-            bgls_result = algorithm[periodogram_type](t_cut, y_cut, dy_cut,
-                                                    fmin = fmin, fmax = fmax,
-                                                    num_freqs = num_periods)
+        for i in tqdm(range(N_max - N_min), disable=single_tqdm_condition):
+            current_N = N_min + i
 
-        N_array.append(np.zeros(len(bgls_result['freq'])) + current_N)
-        periods = 1/bgls_result['freq']
-        periods_array.append(periods)
-        power = bgls_result['power'] - min(bgls_result['power']) + 1
-        best_P = bgls_result['best_period']
+            if mode == 'random without replacement':
+                mode = mode.split(' ')[0]
+                idxs_masks = None
 
-        period_bands = exclude_periods
-        if exclude_periods and isinstance(exclude_periods[0], (int, float)):
-            period_bands = [exclude_periods]
+            t_cut, y_cut, dy_cut, idxs_masks = select_N_time_series_points(
+                t, y, dy,
+                N=current_N, mode=mode,
+                idxs_mask=idxs_masks
+            )
 
-        if exclude_periods:
-            mask_alias = np.zeros_like(periods, dtype=bool)
+            if periodogram_type == 'GLS':
+                bgls_result = algorithm[periodogram_type](
+                    t_cut, y_cut, dy_cut,
+                    fmin=fmin, fmax=fmax,
+                    num_freqs=num_periods,
+                    fit_mean=fit_mean
+                )
+            else:
+                bgls_result = algorithm[periodogram_type](
+                    t_cut, y_cut, dy_cut,
+                    fmin=fmin, fmax=fmax,
+                    num_freqs=num_periods
+                )
 
-            for lo, hi in period_bands:
-                mask_alias |= (periods >= lo) & (periods <= hi)
+            N_array.append(np.zeros(len(bgls_result['freq'])) + current_N)
+            periods = 1 / bgls_result['freq']
+            periods_array.append(periods)
+            power = bgls_result['power'] - min(bgls_result['power']) + 1
+            best_P = bgls_result['best_period']
 
-            if np.any(mask_alias):
-                power_masked = power.copy()
-                power_masked[mask_alias] = 1.
+            period_bands = exclude_periods
+            if exclude_periods and isinstance(exclude_periods[0], (int, float)):
+                period_bands = [exclude_periods]
 
-                _tmp = power.copy()
-                _tmp[mask_alias] = -np.inf
-                _best_idx = int(np.argmax(_tmp))
-                best_P = periods[_best_idx]
+            if exclude_periods:
+                mask_alias = np.zeros_like(periods, dtype=bool)
 
-                power = power_masked
+                for lo, hi in period_bands:
+                    mask_alias |= (periods >= lo) & (periods <= hi)
 
-        power_array.append(power)
-        
+                if np.any(mask_alias):
+                    power_masked = power.copy()
+                    power_masked[mask_alias] = 1.
 
-        output = {
-            'periods' : periods,
-            'power' : power,
-            'best_P' : best_P
-        }
+                    _tmp = power.copy()
+                    _tmp[mask_alias] = -np.inf
+                    _best_idx = int(np.argmax(_tmp))
+                    best_P = periods[_best_idx]
 
-        SNR = calculate_SNR(output, delta_P)
-        SNR_array.append(SNR)
+                    power = power_masked
+
+            power_array.append(power)
+            best_P_array.append(best_P)
+
+        return N_array, periods_array, power_array, best_P_array
+
+
+    def mean_of_stacks(iterations: int):
+        power_mean = 0
+
+        for iteration in tqdm(range(iterations)):
+            if first_mode_chronological and iteration == 0:
+                current_mode = 'chronological'
+                # current_mode = mode
+            else:
+                current_mode = mode
+            N_array, periods_array, power_array, best_P_array = single_stack(mode = current_mode, single_tqdm_condition=True)
+            power_mean += np.array(power_array)
+
+        power_mean = power_mean/iterations
+
+        return N_array, periods_array, power_mean, best_P_array
+
+
+    if iterations == None:
+        N_array, periods_array, power_array, best_P_array = single_stack()
+    else:
+        N_array, periods_array, power_array, best_P_array = mean_of_stacks(iterations = iterations)
+
 
     data = np.stack([N_array, periods_array, power_array], axis=0)
 
     results = {
-        'SNR' : {
-            'best_P' : best_P,
-            'SNR_array' : SNR_array,
-            'delta_P' : delta_P
-        },
+        'best_P_array' : best_P_array,
         'data' : data
     }
 
     return results
 
 
+def ploting_SNR(results, delta_P=0.08, base_P=None, save_plots=False):
+    N_1D_array, SNR_array = get_SNR(results, delta_P=delta_P, base_P=base_P)
+
+    fontsize = 13
+
+    plt.figure(figsize=(10, 5))
+    plt.plot(N_1D_array, SNR_array)
+    plt.xlabel("N of Observations", fontsize=fontsize)
+    plt.ylabel("SNR", fontsize=fontsize)
+    plt.tick_params(axis='both', labelsize=12)
+
+    if save_plots:
+        plt.savefig(f"{save_plots}_SNR.png", dpi=120)
+        plt.close()
+    else:
+        plt.show()
+
+
+
 def plot_stacked_periodogram_heatmap(results, cmap="Reds", vmin=None, vmax=None, norm='linear',
-                                     highlight_strong_signal = False, plot_SNR=False,
-                                     save_plots=False):
+                                    plot_SNR=False,
+                                    save_plots=False,
+                                    delta_P=0.08, base_P=None):
     """
     Plot heatmap from `data` = np.stack([N_array, periods_array, power_array], axis=0)
     where each entry is a list/array per N having the same number of frequencies.
@@ -368,25 +484,11 @@ def plot_stacked_periodogram_heatmap(results, cmap="Reds", vmin=None, vmax=None,
     z-axis: power (color)
     """
     data = results['data']
-    SNR_array = results['SNR']['SNR_array']
-    best_P = results['SNR']['best_P']
-    delta_P = results['SNR']['delta_P']
+    best_P_array = np.array(results['best_P_array'])
+    best_P = np.median(best_P_array)
 
-    N, P, Z = data[0], data[1], data[2]
 
-    N = np.asarray(N)
-    P = np.asarray(P)
-    Z = np.asarray(Z)
-
-    N_1D_array = N[:,0]
-
-    # Sort columns by period and rows by N, just in case
-    col_order = np.argsort(P[0])
-    row_order = np.argsort(N[:, 0])
-
-    P = P[row_order][:, col_order]
-    N = N[row_order][:, col_order]
-    Z = Z[row_order][:, col_order]
+    N, P, Z, N_1D_array = uncompress_data(data)
 
     fontsize = 13
 
@@ -407,28 +509,34 @@ def plot_stacked_periodogram_heatmap(results, cmap="Reds", vmin=None, vmax=None,
     ax.set_xlabel("Period [days]", fontsize=fontsize)
     ax.set_ylabel("N of Observations", fontsize=fontsize)
     ax.tick_params(axis='both', labelsize=12)
-
-    if highlight_strong_signal:
-        ax.vlines([best_P-delta_P, best_P+delta_P], min(N_1D_array), max(N_1D_array),
-                  ls='--')
-
-    plt.tight_layout()
-    if save_plots:
-        plt.savefig(f'{save_plots}_stacked.png',dpi=100)
-        plt.close()
-    else:
-        plt.show()
+    
 
     if plot_SNR:
-        N_1D_array = N[:,0]
+        left_P, right_P = get_P_range(delta_P)
 
-        plt.figure(figsize=(10, 5))
-        plt.plot(N_1D_array, SNR_array)
-        plt.xlabel("N of Observations", fontsize=fontsize)
-        plt.ylabel("SNR", fontsize=fontsize)
-        plt.tick_params(axis='both', labelsize=12)
+        if base_P==None:
+            ax.plot(best_P_array, N_1D_array, color='k')
+            ax.plot(best_P_array-left_P, N_1D_array, color='C0', ls='--')
+            ax.plot(best_P_array+right_P, N_1D_array, color='C0', ls='--')
+
+        elif base_P == 'optimal':
+            base_P = np.median(best_P_array)
+            ax.vlines([base_P], min(N_1D_array), max(N_1D_array), color='k')
+            ax.vlines([base_P-left_P, base_P+right_P], min(N_1D_array), max(N_1D_array),ls='--')
+
+        else:
+            ax.vlines([base_P], min(N_1D_array), max(N_1D_array), color='k')
+            ax.vlines([base_P-left_P, base_P+right_P], min(N_1D_array), max(N_1D_array), ls='--')
+        
+        plt.tight_layout()
         if save_plots:
-            plt.savefig(f'{save_plots}_SNR.png',dpi=100)
+            plt.savefig(f'{save_plots}_stacked.png', dpi=100)
             plt.close()
         else:
             plt.show()
+
+        ploting_SNR(results, delta_P=delta_P, base_P=base_P, save_plots=save_plots)
+    else:
+        plt.tight_layout()
+        plt.show()
+
