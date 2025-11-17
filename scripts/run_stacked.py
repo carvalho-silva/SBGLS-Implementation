@@ -49,7 +49,7 @@ for DSno in DSno_list:
 			data = aux.stacked_periodogram(time, RV, RV_error, N_min=55,
 						                   periodogram_type=periodogram_type, p_min=1.,
 						                   p_max=60., num_periods = 5000,
-						                   mode=mode)
+						                   mode=mode, exclude_periods=(0.98,1.02))
 
 			aux.plot_stacked_periodogram_heatmap(data, norm='log', highlight_strong_signal = True,
 			plot_SNR=True, save_plots=f'{periodogram_type}_DS{DSno}_{mode}')
